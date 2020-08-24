@@ -19,8 +19,7 @@ class SpringbootRedisApplicationTests {
     private RedisTemplate<String, Object> redisTemplate;
     @Test
     public void redisTest(){
-        User user = new User();
-        user.setName("陈晓东");
-        user.setBirthday(new Date());
+        redisTemplate.opsForValue().set("name", "chenxd");
+        System.out.println(redisTemplate.opsForValue().get("name"));
     }
 }
