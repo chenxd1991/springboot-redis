@@ -684,6 +684,79 @@ QUEUED
 OK
 ```
 
+WATCH
+
+WATCH 命令可以为 Redis 事务提供 check-and-set （CAS）行为。 可以监控一个或多个键，一旦其 中有一个键被修改（或删除），之后的事务就不会执行，监控一直持续到EXEC命令 
+
+示例
+
+```bash
+客户端1：
+127.0.0.1:6379> set age 29
+OK
+127.0.0.1:6379> watch age
+OK
+127.0.0.1:6379> multi
+OK
+127.0.0.1:6379> incr age
+QUEUED
+-----------------------------------------------------------------------------------------------------------------------------------------
+客户端2
+127.0.0.1:6379> incr age
+(integer) 30
+-----------------------------------------------------------------------------------------------------------------------------------------
+客户端1：
+127.0.0.1:6379> exec
+(nil)
+
+```
+
+### 发布/订阅
+
+#### 常用命令
+
+SUBSCRIBE：订阅给指定频道的信息。
+
+PSUBSCRIBE：订阅给定的模式(patterns)。
+
+PUBLISH：将信息发送到指定的频道，返回接收客户端的数量。
+
+UNSUBSCRIBE：指示客户端退订给定的频道，若没有指定频道，则退订所有频道。
+
+PUNSUBSCRIBE：指示客户端退订指定模式，若果没有提供模式则退出所有模式。
+
+#### 示例
+
+```bash
+客户端1订阅消息
+127.0.0.1:6379> subscribe mychannel
+Reading messages... (press Ctrl-C to quit)
+1) "subscribe"
+2) "mychannel"
+3) (integer) 1
+客户端2订阅消息
+127.0.0.1:6379> subscribe mychannel
+Reading messages... (press Ctrl-C to quit)
+1) "subscribe"
+2) "mychannel"
+3) (integer) 1
+客户端3发送消息
+127.0.0.1:6379> publish mychannel "hello world"
+(integer) 2
+
+客户端1接收消息
+1) "message"
+2) "mychannel"
+3) "hello world"
+客户端2接收消息
+1) "message"
+2) "mychannel"
+3) "hello world"
+
+```
+
+
+
 ### Spring Boot集成Redis
 
 1. 新建Spring Boot项目
@@ -730,7 +803,7 @@ OK
        }
    ```
 
-   重新默认配置，使用Jackson2JsonRedisSerializer序列化方式
+   重写默认配置，采用Jackson2JsonRedisSerializer序列化方式
 
    ```java
    @Configuration
@@ -760,7 +833,7 @@ OK
 5. 示例
 
    ```java
-   	@Autowired
+    	@Autowired
        private RedisTemplate<String, Object> redisTemplate;
        @Test
        public void redisTest(){
@@ -1946,6 +2019,44 @@ AOF缺点：
 #### 备份选择
 
 可以同时使用RDB和AOF进行数据备份。如果可以忍受几分钟的数据丢失，可以单独使用RDB，不建议单独使用AOF。
+
+### 键过期删除策略及内存淘汰
+
+#### 定时删除
+
+在设置键的过期时间的同时，创建一个定时器，让定时器在键的过期时间来临时，立即执行对键的删除操作。
+
+定时删除的好处是可以尽快释放内存，但是由于过期键可能存在很多的时候删除键的操作占用大量CPU时间导致服务器的响应时间和吞吐量降低。
+
+#### 惰性删除
+
+放任过期键不管，但是每次从键空间获取键的时候，先检查键是否过期，如果过期则删除过期的键，如果没有过期返回键给客户端。
+
+由于键只有在取出的时候才会进行过期时间检查，同时只检查当前键因此对于CPU是友好的。但是可能会出现过期键长时间保留在内存中导致内存不会被释放。
+
+####  定期删除
+
+每隔一段时间，Redis自动对键进行检查，删除已经过期的键。但是不会检查所有的键。
+
+-----
+
+--------
+
+Redis实际上采用惰性删除和定期删除两种策略。通过这两种策略配合，Redis可以更好的利用CPU和内存
+
+
+#### 内存淘汰机制
+
+实际上采用惰性删除和定期删除并不能完全排除内存逐渐升高的问题，因此Redis提供6种内存淘汰策略。默认为不驱逐，返回报错信息。
+
+配置详情：默认 maxmemory-policy noeviction
+
+ volatile-lru -> remove the key with an expire set using an LRU algorithm 在过期时间的键中移除最少使用的键
+ allkeys-lru -> remove any key according to the LRU algorithm 在所有键中移除最少使用的键
+ volatile-random -> remove a random key with an expire set 在过期的键中随机移除
+ allkeys-random -> remove a random key, any key 在所有的键中随机移除
+ volatile-ttl -> remove the key with the nearest expire time (minor TTL)  在过期的键中移除最近过期的键
+ noeviction -> don't expire at all, just return an error on write operations 不移除，返回写入错误
 
 
 
