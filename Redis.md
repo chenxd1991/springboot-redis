@@ -2058,9 +2058,146 @@ Redis实际上采用惰性删除和定期删除两种策略。通过这两种策
  volatile-ttl -> remove the key with the nearest expire time (minor TTL)  在过期的键中移除最近过期的键
  noeviction -> don't expire at all, just return an error on write operations 不移除，返回写入错误
 
+### Redis集群
+
+#### 主从复制（Master-Slave）
+
+Redis主从复制是指将一台Redis服务器（Master）上的数据，复制到其他1—N台Redis服务器（Slave）。Redis是单向复制，只可以由主节点复制到从节点。默认情况下，从节点是只读不允许写（配置：slave-read-only yes）
+
+特点：
+
+1. Redis 使用异步复制，slave 和 master 之间异步地确认处理的数据量。
+2. 一个 master 可以拥有多个 slave。
+3. slave 可以接受其他 slave 的连接。除了多个 slave 可以连接到同一个 master 之外， slave 之间也可以像层叠状的结构（cascading-like structure）连接到其他 slave 。自 Redis 4.0 起，所有的 sub-slave 将会从 master 收到完全一样的复制流。
+4. Redis 复制在 master 侧是非阻塞的。这意味着 master 在一个或多个 slave 进行初次同步或者是部分重同步时，可以继续处理查询请求。
+5. 可以使用复制来避免 master 将全部数据集写入磁盘造成的开销：一种典型的技术是配置你的 master Redis.conf 以避免对磁盘进行持久化，然后连接一个 slave ，其配置为不定期保存或是启用 AOF。但是，这个设置必须小心处理，因为重新启动的 master 程序将从一个空数据集开始：如果一个 slave 试图与它同步，那么这个 slave 也会被清空。
+
+开启主从复制的三种方式：(redis5.0开始，可以使用replicaof <masterip> <masterport>代替 slaveof <masterip> <masterport>)
+
+1. 配置文件 slaveof <masterip> <masterport>
+2. 启动命令 .\redis-server --slaveof <masterip> <masterport>
+3. 客户端 slaveof <masterip> <masterport>
+
+恢复从服务（Slave）为主服务（Master）：slaveof  no one
+
+示例
+
+```bash
+注：由于条件有限，使用Windows环境单机模拟。（Redis高版本已不支持Windows版，建议MacOS或Linux）
+1、复制三份Redis.conf，修改为Redis6379.conf、Redis6380.conf、Redis6381.conf
+2、分别修改三个配置文件：port 6379 、logfile ""、dbfilename dump.rdb，如果开启AOF需要修改appendfilename "appendonly.aof"。
+3、分别启动6379、6380、6381以及对应的客户端。
+4、在6380、6381客户端执行 slaveof 127.0.0.1 6379 （示例使用客户端开启主从复制功能，可按照上面三种方式自行选择。）
+5、Master客户端执行info replication，可以查看信息
+127.0.0.1:6379> info replication
+# Replication
+role:master
+connected_slaves:2
+slave0:ip=127.0.0.1,port=6380,state=online,offset=5717,lag=1
+slave1:ip=127.0.0.1,port=6381,state=online,offset=5717,lag=1
+master_repl_offset:5717
+repl_backlog_active:1
+repl_backlog_size:1048576
+repl_backlog_first_byte_offset:2
+repl_backlog_histlen:5716
+6、Master写入数据，Slave查询数据。
+127.0.0.1:6379> set k1 v1
+OK
+127.0.0.1:6380> get k1
+"v1"
+127.0.0.1:6381> get k1
+"v1"
+7、测试Slave只读不可以写入，执行写入报错。
+127.0.0.1:6380> set k2 v2
+(error) READONLY You can't write against a read only slave.
+```
+
+缺点：
+
+当前模式下，由于某种原因Master挂掉，Slave并不能自动提升为Master需要手动重起Master或者手动将Slave提升为Master（Slave no one），不建议生产环境使用。
+
+#### 哨兵
+
+Sentinel（哨兵）是Redis的高可用解决方案，由一个或多个Sentinel实例组成的Sentinel系统可以监视任意多个主服务器，以及这些主服务器下的所有从服务器，并在被监视的主服务器进入下线状态时，自动将下线主服务器属下的某个从服务器升级为新的主服务器，并由新的主服务器代替已经下线的主服务器处理命令请求。
+
+故障转移流程：
+
+1. Sentinel系统通过投票选取从服务器其中的一台升级为主服务器
+2. Sentinel系统向主服务器属下的所有服务器发送新的复制指令，让他们成为新的主服务器的从服务器，当所有从服务器都开始复制新的主服务器时，故障转移完成。
+3. Sentinel系统还会继续监视已下线的主服务器，在它重新上线时，将它设置为新主服务器的从服务器。
+
+启动Sentinel过程：（已Windows系统为例）
+
+1. 新建配置文件 sentinel79.conf、sentinel80.conf、sentinel81.conf
+
+   ```bash
+   #sentinel79.conf
+   port 26379
+   bind 127.0.0.1
+   sentinel monitor mymaster 127.0.0.1 6379 2 #监视一个名为mymaster的主服务器，IP 127.0.0.1 ，端口 6379 ，主服务器判断为失效至少需要2个Sentinel同意
+   sentinel down-after-milliseconds mymaster 60000 # Sentinel 认为服务器已经断线所需的毫秒数。
+   sentinel failover-timeout mymaster 180000
+   sentinel parallel-syncs mymaster 1
+   #sentinel80.conf
+   port 26380
+   bind 127.0.0.1
+   sentinel monitor mymaster 127.0.0.1 6379 2
+   sentinel down-after-milliseconds mymaster 60000
+   sentinel failover-timeout mymaster 180000
+   sentinel parallel-syncs mymaster 1
+   #sentinel81.conf
+   port 26381
+   bind 127.0.0.1
+   sentinel monitor mymaster 127.0.0.1 6379 2
+   sentinel down-after-milliseconds mymaster 60000
+   sentinel failover-timeout mymaster 180000
+   sentinel parallel-syncs mymaster 1
+   ```
+
+2. 启动sentinel
+
+   ```bash
+   .\redis-server.exe sentinel79.conf --sentinel
+   ```
+
+3. 验证
+
+   ```bash
+   1、停止6379主服务
+   2、在6380和6381执行
+   info relication
+   3、根据返回值可以看到其中一台服务器已经提升为Master
+   4、重新启动6379服务，查看该服务已经变为Slave
+   ```
+
+   
+
+### 其他
+
+#### 缓存雪崩
+
+大规模缓存同时失效，请求访问数据库导致数据库压力过大。
+
+解决方案：
+
+1. Redis高可用，集群、哨兵、主从复制
+2. 请求限流降级
+
+#### 缓存穿透
+
+客户端请求查询一条数据库中不存在的数据，由于数据库中不存在缓存中也不会存在。因此每次请求都会访问数据库，导致数据库压力过大。通俗讲就是查不到
+
+解决方案：
+
+1. 缓存空值，最简单的方案就是如果数据库不存在就缓存一个空值到Redis。缺点是可能造成缓存大量的无效空值
+2. BloomFilter，在缓存之前增加BloomFilter。如guava的BloomFilter
 
 
+#### 缓存击穿
 
+客户端大量请求同时查询一个key时，由于key刚好过期导致请求访问数据库，导致数据库压力过大。
 
+解决方案：
 
+1. 使用锁避免请求同时到数据库
 
